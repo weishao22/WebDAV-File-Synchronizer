@@ -55,7 +55,7 @@ fun DownloadListScreen(
             }
         } else {
             LazyColumn(modifier = Modifier.padding(padding)) {
-                items(downloads, key = { "${it.id}_${it.status}" }) { item ->
+                items(downloads, key = { it.id }) { item ->
                     DownloadRow(
                         item = item,
                         onPause = { viewModel.pauseDownload(item.id) },
