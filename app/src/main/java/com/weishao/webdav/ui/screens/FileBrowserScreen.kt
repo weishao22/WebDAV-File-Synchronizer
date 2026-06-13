@@ -17,6 +17,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.weishao.webdav.data.FileItem
 import com.weishao.webdav.ui.WebDavViewModel
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -24,7 +25,8 @@ fun FileBrowserScreen(
     viewModel: WebDavViewModel,
     onLogout: () -> Unit,
     onSettings: () -> Unit,
-    onViewLogs: () -> Unit
+    onViewLogs: () -> Unit,
+    onViewDownloads: () -> Unit
 ) {
     val files by viewModel.files.collectAsState()
     val currentPath by viewModel.currentPath.collectAsState()
@@ -36,12 +38,24 @@ fun FileBrowserScreen(
     val remoteUrl by viewModel.remoteUrl.collectAsState()
     val authHeader by viewModel.authHeader.collectAsState()
     val searchTerm by viewModel.searchTerm.collectAsState()
+    val downloadMessage by viewModel.downloadMessage.collectAsState()
 
     var showRenameDialog by remember { mutableStateOf<FileItem?>(null) }
     var showCreateFolderDialog by remember { mutableStateOf(false) }
     var showMenu by remember { mutableStateOf(false) }
+    var showSearchDialog by remember { mutableStateOf(false) }
     var newName by remember { mutableStateOf("") }
     var selectedFileForView by remember { mutableStateOf<FileItem?>(null) }
+
+    val snackbarHostState = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
+
+    LaunchedEffect(downloadMessage) {
+        downloadMessage?.let {
+            scope.launch { snackbarHostState.showSnackbar(it) }
+            viewModel.clearDownloadMessage()
+        }
+    }
 
     val filteredFiles = remember(files, searchTerm) {
         if (searchTerm.isEmpty()) files else files.filter { it.name.contains(searchTerm, ignoreCase = true) }
@@ -126,102 +140,157 @@ fun FileBrowserScreen(
         )
     }
 
-    Scaffold(
-        topBar = {
-            Column {
-                TopAppBar(
-                    title = {
-                        val displayTitle = if (currentPath.isEmpty()) "/" else currentPath.substringAfterLast('/')
-                        Text(
-                            text = displayTitle,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    },
-                    navigationIcon = {
-                        if (currentPath.isNotEmpty()) {
-                            IconButton(onClick = {
-                                val parent = currentPath.substringBeforeLast('/', "")
-                                viewModel.loadFiles(parent)
-                            }) {
-                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
-                            }
-                        }
-                    },
-                    actions = {
-                        IconButton(onClick = { viewModel.syncNow() }) {
-                            Icon(imageVector = Icons.Default.Sync, contentDescription = "立即同步")
-                        }
-                        IconButton(onClick = { viewModel.loadFiles() }) {
-                            Icon(Icons.Default.Refresh, contentDescription = "刷新")
-                        }
-                        Box {
-                            IconButton(onClick = { showMenu = true }) {
-                                Icon(Icons.Default.MoreVert, contentDescription = "更多")
-                            }
-                            DropdownMenu(
-                                expanded = showMenu,
-                                onDismissRequest = { showMenu = false }
-                            ) {
-                                DropdownMenuItem(
-                                    text = { Text("新建文件夹") },
-                                    onClick = {
-                                        showMenu = false
-                                        showCreateFolderDialog = true
-                                    },
-                                    leadingIcon = { Icon(Icons.Default.CreateNewFolder, null) }
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("查看日志") },
-                                    onClick = {
-                                        showMenu = false
-                                        onViewLogs()
-                                    },
-                                    leadingIcon = { Icon(Icons.AutoMirrored.Filled.ListAlt, null) }
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("设置") },
-                                    onClick = {
-                                        showMenu = false
-                                        onSettings()
-                                    },
-                                    leadingIcon = { Icon(Icons.Default.Settings, null) }
-                                )
-                                HorizontalDivider()
-                                DropdownMenuItem(
-                                    text = { Text("退出登录") },
-                                    onClick = {
-                                        showMenu = false
-                                        onLogout()
-                                    },
-                                    leadingIcon = { Icon(Icons.AutoMirrored.Filled.ExitToApp, null) }
-                                )
+    if (showSearchDialog) {
+        var searchText by remember { mutableStateOf(searchTerm) }
+        AlertDialog(
+            onDismissRequest = { showSearchDialog = false },
+            title = { Text("搜索文件") },
+            text = {
+                TextField(
+                    value = searchText,
+                    onValueChange = { searchText = it },
+                    placeholder = { Text("输入文件名关键词...") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                    trailingIcon = {
+                        if (searchText.isNotEmpty()) {
+                            IconButton(onClick = { searchText = "" }) {
+                                Icon(Icons.Default.Clear, contentDescription = "清除")
                             }
                         }
                     }
                 )
-                TextField(
-                    value = searchTerm,
-                    onValueChange = { viewModel.setSearchTerm(it) },
-                    placeholder = { Text("搜索文件...") },
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-                    trailingIcon = {
-                        if (searchTerm.isNotEmpty()) {
-                            IconButton(onClick = { viewModel.setSearchTerm("") }) {
-                                Icon(Icons.Default.Clear, contentDescription = "清除")
-                            }
-                        }
-                    },
-                    singleLine = true
-                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.setSearchTerm(searchText)
+                    showSearchDialog = false
+                }) {
+                    Text("搜索")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showSearchDialog = false }) {
+                    Text("取消")
+                }
             }
+        )
+    }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = {
+                    val displayTitle = if (currentPath.isEmpty()) "/" else currentPath.substringAfterLast('/')
+                    Text(
+                        text = displayTitle,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                },
+                navigationIcon = {
+                    if (currentPath.isNotEmpty()) {
+                        IconButton(onClick = {
+                            val parent = currentPath.substringBeforeLast('/', "")
+                            viewModel.loadFiles(parent)
+                        }) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
+                        }
+                    }
+                },
+                actions = {
+                    if (searchTerm.isNotEmpty()) {
+                        IconButton(onClick = { viewModel.setSearchTerm("") }) {
+                            Icon(Icons.Default.SearchOff, contentDescription = "清除搜索")
+                        }
+                    }
+                    Box {
+                        IconButton(onClick = { showMenu = true }) {
+                            Icon(Icons.Default.MoreVert, contentDescription = "更多")
+                        }
+                        DropdownMenu(
+                            expanded = showMenu,
+                            onDismissRequest = { showMenu = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("搜索文件") },
+                                onClick = {
+                                    showMenu = false
+                                    showSearchDialog = true
+                                },
+                                leadingIcon = { Icon(Icons.Default.Search, null) }
+                            )
+                            HorizontalDivider()
+                            DropdownMenuItem(
+                                text = { Text("立即同步") },
+                                onClick = {
+                                    showMenu = false
+                                    viewModel.syncNow()
+                                },
+                                leadingIcon = { Icon(Icons.Default.Sync, null) }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("刷新") },
+                                onClick = {
+                                    showMenu = false
+                                    viewModel.loadFiles()
+                                },
+                                leadingIcon = { Icon(Icons.Default.Refresh, null) }
+                            )
+                            HorizontalDivider()
+                            DropdownMenuItem(
+                                text = { Text("新建文件夹") },
+                                onClick = {
+                                    showMenu = false
+                                    showCreateFolderDialog = true
+                                },
+                                leadingIcon = { Icon(Icons.Default.CreateNewFolder, null) }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("查看日志") },
+                                onClick = {
+                                    showMenu = false
+                                    onViewLogs()
+                                },
+                                leadingIcon = { Icon(Icons.AutoMirrored.Filled.ListAlt, null) }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("下载列表") },
+                                onClick = {
+                                    showMenu = false
+                                    onViewDownloads()
+                                },
+                                leadingIcon = { Icon(Icons.Default.Download, null) }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("设置") },
+                                onClick = {
+                                    showMenu = false
+                                    onSettings()
+                                },
+                                leadingIcon = { Icon(Icons.Default.Settings, null) }
+                            )
+                            HorizontalDivider()
+                            DropdownMenuItem(
+                                text = { Text("退出登录") },
+                                onClick = {
+                                    showMenu = false
+                                    onLogout()
+                                },
+                                leadingIcon = { Icon(Icons.AutoMirrored.Filled.ExitToApp, null) }
+                            )
+                        }
+                    }
+                }
+            )
         },
         floatingActionButton = {
             FloatingActionButton(onClick = { launcher.launch("*/*") }) {
                 Icon(Icons.Default.Add, contentDescription = "上传文件")
             }
-        }
+        },
+        snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { padding ->
         Box(modifier = Modifier.padding(padding)) {
             if (isLoading) {

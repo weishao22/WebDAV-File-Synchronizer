@@ -9,5 +9,6 @@ data class WebDavConfig(
     val password: String = "",
     val syncConfigs: List<SyncConfig> = emptyList(),
     val autoUploadEnabled: Boolean = false,
-    val uploadConcurrency: Int = 3
+    val uploadConcurrency: Int = 3,
+    val downloadPath: String = ""
 )

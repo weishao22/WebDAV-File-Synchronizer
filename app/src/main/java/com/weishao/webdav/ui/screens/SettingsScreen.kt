@@ -25,6 +25,7 @@ fun SettingsScreen(
     var autoUploadEnabled by remember { mutableStateOf(config.autoUploadEnabled) }
     var uploadConcurrency by remember { mutableFloatStateOf(config.uploadConcurrency.toFloat()) }
     var syncConfigs by remember { mutableStateOf(config.syncConfigs) }
+    var downloadPath by remember { mutableStateOf(config.downloadPath) }
     
     var showAddDialog by remember { mutableStateOf(false) }
     var localPath by remember { mutableStateOf("") }
@@ -44,7 +45,8 @@ fun SettingsScreen(
                         onConfigChange(config.copy(
                             autoUploadEnabled = autoUploadEnabled,
                             uploadConcurrency = uploadConcurrency.toInt(),
-                            syncConfigs = syncConfigs
+                            syncConfigs = syncConfigs,
+                            downloadPath = downloadPath
                         ))
                         onBack()
                     }) {
@@ -67,6 +69,17 @@ fun SettingsScreen(
                 onValueChange = { uploadConcurrency = it },
                 valueRange = 1f..10f,
                 steps = 8
+            )
+            
+            Spacer(modifier = Modifier.height(16.dp))
+            Text("下载保存路径", style = MaterialTheme.typography.titleMedium)
+            Spacer(modifier = Modifier.height(8.dp))
+            TextField(
+                value = downloadPath,
+                onValueChange = { downloadPath = it },
+                label = { Text("下载路径 (留空使用默认下载目录)") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
             )
             
             Spacer(modifier = Modifier.height(16.dp))

@@ -2,7 +2,9 @@ package com.weishao.webdav.ui
 
 import android.app.Application
 import android.content.Intent
+import android.media.MediaScannerConnection
 import android.os.Build
+import android.os.Environment
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.work.*
@@ -14,7 +16,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.collectLatest
 import java.io.File
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 
 class WebDavViewModel(application: Application) : AndroidViewModel(application) {
     private val dataStore = WebDavDataStore(application)
@@ -122,6 +126,16 @@ class WebDavViewModel(application: Application) : AndroidViewModel(application) 
 
     private val _tempFile = MutableStateFlow<File?>(null)
     val tempFile: StateFlow<File?> = _tempFile
+
+    private val _downloadMessage = MutableStateFlow<String?>(null)
+    val downloadMessage: StateFlow<String?> = _downloadMessage
+
+    private val _downloads = MutableStateFlow<List<DownloadItem>>(emptyList())
+    val downloads: StateFlow<List<DownloadItem>> = _downloads
+
+    private val downloadIdCounter = AtomicLong(0)
+    private val downloadJobs = ConcurrentHashMap<Long, Job>()
+    private val downloadCalls = ConcurrentHashMap<Long, okhttp3.Call>()
 
     private var repository: WebDavRepository? = null
 
@@ -291,16 +305,185 @@ class WebDavViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun downloadToSystem(fileItem: FileItem) {
-        val context = getApplication<Application>()
-        val url = repository?.buildUrl(fileItem.path, false).toString()
-        val request = android.app.DownloadManager.Request(android.net.Uri.parse(url))
-            .setAllowedNetworkTypes(android.app.DownloadManager.Request.NETWORK_WIFI or android.app.DownloadManager.Request.NETWORK_MOBILE)
-            .setNotificationVisibility(android.app.DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-            .setTitle(fileItem.name)
-            .setDestinationInExternalPublicDir(android.os.Environment.DIRECTORY_DOWNLOADS, fileItem.name)
-            .addRequestHeader("Authorization", okhttp3.Credentials.basic(_config.value.username, _config.value.password))
+        val downloadId = downloadIdCounter.incrementAndGet()
+        val item = DownloadItem(
+            id = downloadId,
+            fileName = fileItem.name,
+            remotePath = fileItem.path,
+            status = DownloadStatus.Pending,
+            totalBytes = fileItem.size
+        )
+        _downloads.value = _downloads.value + item
+        startDownload(downloadId)
+    }
 
-        val manager = context.getSystemService(android.content.Context.DOWNLOAD_SERVICE) as android.app.DownloadManager
-        manager.enqueue(request)
+    fun pauseDownload(downloadId: Long) {
+        downloadCalls[downloadId]?.cancel()
+        downloadCalls.remove(downloadId)
+        downloadJobs[downloadId]?.cancel()
+        downloadJobs.remove(downloadId)
+        _downloads.value = _downloads.value.map {
+            if (it.id == downloadId) it.copy(status = DownloadStatus.Paused) else it
+        }
+    }
+
+    fun resumeDownload(downloadId: Long) {
+        _downloads.value = _downloads.value.map {
+            if (it.id == downloadId) it.copy(
+                status = DownloadStatus.Pending,
+                totalBytes = 0L,
+                speed = ""
+            ) else it
+        }
+        startDownload(downloadId)
+    }
+
+    fun cancelDownload(downloadId: Long) {
+        downloadCalls[downloadId]?.cancel()
+        downloadCalls.remove(downloadId)
+        downloadJobs[downloadId]?.cancel()
+        downloadJobs.remove(downloadId)
+        val item = _downloads.value.find { it.id == downloadId } ?: return
+        _downloads.value = _downloads.value.map {
+            if (it.id == downloadId) it.copy(status = DownloadStatus.Cancelled) else it
+        }
+        val context = getApplication<Application>()
+        val tempFile = File(resolveDownloadDir(context), "${item.fileName}.tmp")
+        if (tempFile.exists()) {
+            tempFile.delete()
+        }
+    }
+
+    fun removeDownload(downloadId: Long) {
+        downloadCalls[downloadId]?.cancel()
+        downloadCalls.remove(downloadId)
+        downloadJobs[downloadId]?.cancel()
+        downloadJobs.remove(downloadId)
+        _downloads.value = _downloads.value.filter { it.id != downloadId }
+    }
+
+    fun clearDownloads() {
+        val activeIds = _downloads.value
+            .filter { it.status == DownloadStatus.Downloading || it.status == DownloadStatus.Pending }
+            .map { it.id }
+            .toSet()
+        _downloads.value = _downloads.value.filter { it.id in activeIds }
+    }
+
+    fun clearDownloadMessage() {
+        _downloadMessage.value = null
+    }
+
+    private fun startDownload(downloadId: Long) {
+        val item = _downloads.value.find { it.id == downloadId } ?: return
+        val job = viewModelScope.launch {
+            val repo = repository ?: WebDavRepository(_config.value)
+            val context = getApplication<Application>()
+
+            _downloads.value = _downloads.value.map {
+                if (it.id == downloadId) it.copy(status = DownloadStatus.Downloading) else it
+            }
+
+            val downloadDir = resolveDownloadDir(context)
+            if (!downloadDir.exists()) {
+                downloadDir.mkdirs()
+            }
+
+            val tempFile = File(downloadDir, "${item.fileName}.tmp")
+            val offset = if (tempFile.exists()) tempFile.length() else 0L
+
+            var lastBytes = offset
+            var lastTime = System.currentTimeMillis()
+
+            try {
+                repo.downloadFileWithProgress(
+                    item.remotePath, tempFile, offset,
+                    onProgress = { downloaded, total ->
+                    val now = System.currentTimeMillis()
+                    val elapsed = (now - lastTime).coerceAtLeast(1)
+                    val bytesDelta = downloaded - lastBytes
+                    val speedStr = if (elapsed >= 500 || bytesDelta > 0) {
+                        lastBytes = downloaded
+                        lastTime = now
+                        formatSpeed(bytesDelta, elapsed)
+                    } else {
+                        _downloads.value.find { it.id == downloadId }?.speed ?: ""
+                    }
+
+                    _downloads.value = _downloads.value.map {
+                        if (it.id == downloadId) it.copy(
+                            downloadedBytes = downloaded,
+                            totalBytes = total,
+                            speed = speedStr
+                        ) else it
+                    }
+                },
+                onCallCreated = { call ->
+                    downloadCalls[downloadId] = call
+                }
+            )
+
+                val finalFile = File(downloadDir, item.fileName)
+                if (finalFile.exists()) {
+                    finalFile.delete()
+                }
+                tempFile.renameTo(finalFile)
+
+                MediaScannerConnection.scanFile(
+                    context,
+                    arrayOf(finalFile.absolutePath),
+                    null
+                ) { _, _ -> }
+
+                _downloads.value = _downloads.value.map {
+                    if (it.id == downloadId) it.copy(
+                        status = DownloadStatus.Completed,
+                        speed = ""
+                    ) else it
+                }
+                _downloadMessage.value = "下载完成: ${item.fileName}"
+                downloadJobs.remove(downloadId)
+                downloadCalls.remove(downloadId)
+            } catch (e: CancellationException) {
+                downloadJobs.remove(downloadId)
+                downloadCalls.remove(downloadId)
+                throw e
+            } catch (e: Exception) {
+                downloadJobs.remove(downloadId)
+                downloadCalls.remove(downloadId)
+                val current = _downloads.value.find { it.id == downloadId }
+                if (current?.status != DownloadStatus.Paused && current?.status != DownloadStatus.Cancelled) {
+                    _downloads.value = _downloads.value.map {
+                        if (it.id == downloadId) it.copy(
+                            status = DownloadStatus.Failed,
+                            errorMessage = e.message,
+                            speed = ""
+                        ) else it
+                    }
+                    _downloadMessage.value = "下载失败: ${e.message}"
+                }
+            }
+        }
+        downloadJobs[downloadId] = job
+    }
+
+    private fun formatSpeed(bytesDelta: Long, elapsedMs: Long): String {
+        val bytesPerSec = (bytesDelta * 1000.0 / elapsedMs).toLong()
+        return when {
+            bytesPerSec >= 1_000_000 -> "%.1f MB/s".format(bytesPerSec / 1_000_000.0)
+            bytesPerSec >= 1_000 -> "%.1f KB/s".format(bytesPerSec / 1_000.0)
+            else -> "$bytesPerSec B/s"
+        }
+    }
+
+    private fun resolveDownloadDir(context: android.content.Context): File {
+        val configPath = _config.value.downloadPath.trim()
+        return if (configPath.isEmpty()) {
+            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+        } else if (configPath.startsWith("/")) {
+            File(configPath)
+        } else {
+            File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), configPath)
+        }
     }
 }

@@ -12,9 +12,12 @@ import okhttp3.Credentials
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
+import okhttp3.Request
 import okhttp3.RequestBody.Companion.asRequestBody
 import java.io.File
 import java.io.FileOutputStream
+import java.io.InputStream
+import java.io.RandomAccessFile
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
@@ -141,6 +144,64 @@ class WebDavRepository(private val config: WebDavConfig) {
                 } else {
                     continuation.resumeWithException(Exception("Download failed: ${response.code}"))
                 }
+            }
+        }
+    }
+
+    suspend fun downloadFileWithProgress(
+        remotePath: String,
+        localFile: File,
+        offset: Long = 0,
+        onProgress: (downloadedBytes: Long, totalBytes: Long) -> Unit,
+        onCallCreated: (okhttp3.Call) -> Unit = {}
+    ) = withContext(Dispatchers.IO) {
+        val fullUrl = buildUrl(remotePath, false)
+        val credential = Credentials.basic(config.username, config.password)
+
+        val requestBuilder = Request.Builder()
+            .url(fullUrl)
+            .header("Authorization", credential)
+            .get()
+
+        if (offset > 0) {
+            requestBuilder.header("Range", "bytes=$offset-")
+        }
+
+        val call = client.newCall(requestBuilder.build())
+        onCallCreated(call)
+        val response = call.execute()
+        if (!response.isSuccessful && response.code != 206) {
+            throw Exception("Download failed: ${response.code}")
+        }
+
+        val body = response.body ?: throw Exception("Empty response body")
+        val contentLength = body.contentLength()
+        val totalBytes: Long = if (response.code == 206) {
+            val contentRange = response.header("Content-Range")
+            if (contentRange != null) {
+                val parts = contentRange.split("/")
+                parts.lastOrNull()?.toLongOrNull() ?: (offset + contentLength)
+            } else {
+                offset + contentLength
+            }
+        } else {
+            contentLength
+        }
+
+        body.byteStream().use { input ->
+            val raf = RandomAccessFile(localFile, "rw")
+            raf.seek(offset)
+            try {
+                val buffer = ByteArray(8192)
+                var bytesRead: Int
+                var totalRead = offset
+                while (input.read(buffer).also { bytesRead = it } != -1) {
+                    raf.write(buffer, 0, bytesRead)
+                    totalRead += bytesRead
+                    onProgress(totalRead, totalBytes)
+                }
+            } finally {
+                raf.close()
             }
         }
     }

@@ -15,7 +15,7 @@ import com.weishao.webdav.ui.screens.*
 import com.weishao.webdav.ui.theme.MyApplicationTheme
 
 enum class Screen {
-    Login, Browser, Settings, Logs
+    Login, Browser, Settings, Logs, Downloads
 }
 
 class MainActivity : ComponentActivity() {
@@ -58,6 +58,9 @@ class MainActivity : ComponentActivity() {
                             },
                             onViewLogs = {
                                 currentScreen = Screen.Logs
+                            },
+                            onViewDownloads = {
+                                currentScreen = Screen.Downloads
                             }
                         )
                         Screen.Settings -> SettingsScreen(
@@ -66,6 +69,10 @@ class MainActivity : ComponentActivity() {
                             onBack = { currentScreen = Screen.Browser }
                         )
                         Screen.Logs -> LogScreen(
+                            onBack = { currentScreen = Screen.Browser }
+                        )
+                        Screen.Downloads -> DownloadListScreen(
+                            viewModel = viewModel,
                             onBack = { currentScreen = Screen.Browser }
                         )
                     }

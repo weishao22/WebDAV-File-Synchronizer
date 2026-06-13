@@ -19,6 +19,7 @@ class WebDavDataStore(private val context: Context) {
         private val SYNC_CONFIGS = stringPreferencesKey("sync_configs")
         private val AUTO_UPLOAD_ENABLED = booleanPreferencesKey("auto_upload_enabled")
         private val UPLOAD_CONCURRENCY = intPreferencesKey("upload_concurrency")
+        private val DOWNLOAD_PATH = stringPreferencesKey("download_path")
     }
 
     val configFlow: Flow<WebDavConfig> = context.dataStore.data.map { preferences ->
@@ -36,7 +37,8 @@ class WebDavDataStore(private val context: Context) {
             password = preferences[PASSWORD] ?: "",
             syncConfigs = syncConfigs,
             autoUploadEnabled = preferences[AUTO_UPLOAD_ENABLED] ?: false,
-            uploadConcurrency = preferences[UPLOAD_CONCURRENCY] ?: 3
+            uploadConcurrency = preferences[UPLOAD_CONCURRENCY] ?: 3,
+            downloadPath = preferences[DOWNLOAD_PATH] ?: ""
         )
     }
 
@@ -48,6 +50,7 @@ class WebDavDataStore(private val context: Context) {
             preferences[SYNC_CONFIGS] = Json.encodeToString(config.syncConfigs)
             preferences[AUTO_UPLOAD_ENABLED] = config.autoUploadEnabled
             preferences[UPLOAD_CONCURRENCY] = config.uploadConcurrency
+            preferences[DOWNLOAD_PATH] = config.downloadPath
         }
     }
 }
